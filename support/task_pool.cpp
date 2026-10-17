@@ -42,7 +42,7 @@ void TaskPool::_init() {
       task();
     }
   };
-  for (unsigned i = 0, n = std::max((size_t)1, _threadLimit); i < n; ++i) {
+  for (unsigned i = 0, n = _threadLimit; i < n; ++i) {
     _workers.emplace_back(workerLoop);
   }
 }

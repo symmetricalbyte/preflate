@@ -16,11 +16,6 @@
 #include "preflate_block_trees.h"
 #include "support/bit_helper.h"
 
-static HuffmanDecoder* staticLitLenDecoder;
-static HuffmanDecoder* staticDistDecoder;
-static HuffmanEncoder* staticLitLenEncoder;
-static HuffmanEncoder* staticDistEncoder;
-
 static void setLitLenBitLengths(unsigned char(&a)[288]) {
   std::fill(a +   0, a + 144, 8);
   std::fill(a + 144, a + 256, 9);
@@ -32,34 +27,34 @@ static void setDistBitLengths(unsigned char(&a)[32]) {
 }
 
 const HuffmanDecoder* PreflateBlockTrees::staticLitLenTreeDecoder() {
-  if (!staticLitLenDecoder) {
+  static const HuffmanDecoder decoder = []() {
     unsigned char l_lengths[288];
     setLitLenBitLengths(l_lengths);
-    staticLitLenDecoder = new HuffmanDecoder(l_lengths, 288, true, 15);
-  }
-  return staticLitLenDecoder;
+    return HuffmanDecoder(l_lengths, 288, true, 15);
+  }();
+  return &decoder;
 }
 const HuffmanDecoder* PreflateBlockTrees::staticDistTreeDecoder() {
-  if (!staticDistDecoder) {
+  static const HuffmanDecoder decoder = []() {
     unsigned char d_lengths[32];
     setDistBitLengths(d_lengths);
-    staticDistDecoder = new HuffmanDecoder(d_lengths, 32, true, 15);
-  }
-  return staticDistDecoder;
+    return HuffmanDecoder(d_lengths, 32, true, 15);
+  }();
+  return &decoder;
 }
 const HuffmanEncoder* PreflateBlockTrees::staticLitLenTreeEncoder() {
-  if (!staticLitLenEncoder) {
+  static const HuffmanEncoder encoder = []() {
     unsigned char l_lengths[288];
     setLitLenBitLengths(l_lengths);
-    staticLitLenEncoder = new HuffmanEncoder(l_lengths, 288, true);
-  }
-  return staticLitLenEncoder;
+    return HuffmanEncoder(l_lengths, 288, true);
+  }();
+  return &encoder;
 }
 const HuffmanEncoder* PreflateBlockTrees::staticDistTreeEncoder() {
-  if (!staticDistEncoder) {
+  static const HuffmanEncoder encoder = []() {
     unsigned char d_lengths[32];
     setDistBitLengths(d_lengths);
-    staticDistEncoder = new HuffmanEncoder(d_lengths, 32, true);
-  }
-  return staticDistEncoder;
+    return HuffmanEncoder(d_lengths, 32, true);
+  }();
+  return &encoder;
 }

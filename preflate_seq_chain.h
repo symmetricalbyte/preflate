@@ -57,6 +57,7 @@ struct PreflateSeqIterator {
 struct PreflateSeqChain {
   PreflateInput _input;
   SeqChainEntry* prev;
+  int poolIndex;
   unsigned totalShift;
   unsigned curPos;
   uint16_t heads[256];

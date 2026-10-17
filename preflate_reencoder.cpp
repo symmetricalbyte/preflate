@@ -12,7 +12,9 @@
    See the License for the specific language governing permissions and
    limitations under the License. */
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include "preflate_block_reencoder.h"
 #include "preflate_reencoder.h"
 #include "preflate_statistical_codec.h"
@@ -154,34 +156,37 @@ bool preflate_reencode(OutputStream& os,
     maxMetaBlockSize = std::max(maxMetaBlockSize, decoder.metaBlockUncompressedSize(j));
   }
   size_t queueLimit = std::min(2 * globalTaskPool.extraThreadCount(), (1 << 26) / maxMetaBlockSize);
-  bool fail = false;
+  auto fail = std::make_shared<std::atomic<bool>>(false);
   for (size_t j = 0, n = decoder.metaBlockCount(); j < n; ++j) {
     size_t curUncSize = uncompressedData.size();
     size_t newSize = decoder.metaBlockUncompressedSize(j);
     uncompressedData.resize(curUncSize + newSize);
     if (is.read(uncompressedData.data() + curUncSize, newSize) != newSize) {
-      return false;
+      fail->store(true, std::memory_order_relaxed);
+      break;
     }
 
     if (futureQueue.empty() && (queueLimit == 0 || j + 1 == n)) {
       PreflateReencoderTask task(decoder, j, std::vector<uint8_t>(uncompressedData), curUncSize, j + 1 == n);
       if (!task.decodeAndRepredict() || !task.reencode()) {
-        return false;
+        fail->store(true, std::memory_order_relaxed);
+        break;
       }
     } else {
       if (futureQueue.size() >= queueLimit) {
         std::future<std::shared_ptr<PreflateReencoderTask>> first = std::move(futureQueue.front());
         futureQueue.pop();
         std::shared_ptr<PreflateReencoderTask> data = first.get();
-        if (fail || !data || !data->reencode()) {
-          fail = true;
+        if (fail->load(std::memory_order_relaxed) || !data || !data->reencode()) {
+          fail->store(true, std::memory_order_relaxed);
+          break;
         }
       }
       std::shared_ptr<PreflateReencoderTask> ptask;
       ptask.reset(new PreflateReencoderTask(decoder, j, std::vector<uint8_t>(uncompressedData),
                                             curUncSize, j + 1 == n));
-      futureQueue.push(globalTaskPool.addTask([ptask, &fail]() {
-        if (!fail && ptask->decodeAndRepredict()) {
+      futureQueue.push(globalTaskPool.addTask([ptask, fail]() {
+        if (!fail->load(std::memory_order_relaxed) && ptask->decodeAndRepredict()) {
           return ptask;
         } else {
           return std::shared_ptr<PreflateReencoderTask>();
@@ -198,12 +203,12 @@ bool preflate_reencode(OutputStream& os,
     std::future<std::shared_ptr<PreflateReencoderTask>> first = std::move(futureQueue.front());
     futureQueue.pop();
     std::shared_ptr<PreflateReencoderTask> data = first.get();
-    if (fail || !data || !data->reencode()) {
-      fail = true;
+    if (fail->load(std::memory_order_relaxed) || !data || !data->reencode()) {
+      fail->store(true, std::memory_order_relaxed);
     }
   }
   bos.flush();
-  return !fail && !decoder.error();
+  return !fail->load(std::memory_order_relaxed) && !decoder.error();
 }
 
 bool preflate_reencode(OutputStream& os,

@@ -36,9 +36,7 @@ public:
     auto task = std::make_shared<std::packaged_task<R()>>(
       std::bind(std::forward<F>(f), std::forward<Args>(args)...));
 
-    if (_state == INIT) {
-      _init();
-    }
+    std::call_once(_initFlag, [this]() { _init(); });
     std::future<R> res = task->get_future();
     {
       std::unique_lock<std::mutex> lock(_mutex);
@@ -52,6 +50,10 @@ public:
     return _threadLimit;
   }
 
+  void setThreadLimit(size_t limit) {
+    _threadLimit = limit;
+  }
+
 private:
   enum State { INIT, RUN, FINISH };
 
@@ -59,6 +61,7 @@ private:
 
   State _state;
   size_t _threadLimit;
+  std::once_flag _initFlag;
   std::vector<std::thread> _workers;
   std::mutex _mutex;
   std::condition_variable _condition;

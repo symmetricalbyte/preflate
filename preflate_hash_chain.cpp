@@ -15,7 +15,49 @@
 #include <algorithm>
 #include <string.h>
 #include "preflate_constants.h"
+#include <memory>
 #include "preflate_hash_chain.h"
+
+namespace {
+struct HashChainBufferSet {
+  std::unique_ptr<unsigned short[]> head;
+  std::unique_ptr<unsigned short[]> prev;
+  std::unique_ptr<unsigned[]> chainDepth;
+  bool inUse;
+};
+
+struct HashChainPool {
+  static const int POOL_SIZE = 8;
+  HashChainBufferSet buffers[POOL_SIZE];
+
+  HashChainPool() {
+    for (int i = 0; i < POOL_SIZE; ++i) {
+      buffers[i].head.reset(new unsigned short[1 << 16]);
+      buffers[i].prev.reset(new unsigned short[1 << 16]);
+      buffers[i].chainDepth.reset(new unsigned[1 << 16]);
+      buffers[i].inUse = false;
+    }
+  }
+
+  int acquire() {
+    for (int i = 0; i < POOL_SIZE; ++i) {
+      if (!buffers[i].inUse) {
+        buffers[i].inUse = true;
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  void release(int index) {
+    if (index >= 0 && index < POOL_SIZE) {
+      buffers[index].inUse = false;
+    }
+  }
+};
+
+static thread_local HashChainPool tl_hashPool;
+}
 
 PreflateHashChainExt::PreflateHashChainExt(
     const std::vector<unsigned char>& input_,
@@ -25,12 +67,19 @@ PreflateHashChainExt::PreflateHashChainExt(
   hashBits = memLevel + 7;
   hashShift = (hashBits + PreflateConstants::MIN_MATCH - 1) / PreflateConstants::MIN_MATCH;
   hashMask = (1 << hashBits) - 1;
-  head = new unsigned short[hashMask + 1];
-  prev = new unsigned short[1 << 16];
-  chainDepth = new unsigned[1 << 16];
+  poolIndex = tl_hashPool.acquire();
+  if (poolIndex >= 0) {
+    head = tl_hashPool.buffers[poolIndex].head.get();
+    prev = tl_hashPool.buffers[poolIndex].prev.get();
+    chainDepth = tl_hashPool.buffers[poolIndex].chainDepth.get();
+  } else {
+    head = new unsigned short[hashMask + 1];
+    prev = new unsigned short[1 << 16];
+    chainDepth = new unsigned[1 << 16];
+  }
   memset(head, 0, sizeof(short) * (hashMask + 1));
-  memset(prev, 0, sizeof(short) * (1 << 16));
-  memset(chainDepth, 0, sizeof(unsigned) * (1 << 16));
+  memset(prev, 0, sizeof(short) * 8);
+  memset(chainDepth, 0, sizeof(unsigned) * 8);
   runningHash = 0;
   if (_input.remaining() > 2) {
     updateRunningHash(_input.curChar(0));
@@ -38,9 +87,13 @@ PreflateHashChainExt::PreflateHashChainExt(
   }
 }
 PreflateHashChainExt::~PreflateHashChainExt() {
-  delete[] head;
-  delete[] chainDepth;
-  delete[] prev;
+  if (poolIndex >= 0) {
+    tl_hashPool.release(poolIndex);
+  } else {
+    delete[] head;
+    delete[] chainDepth;
+    delete[] prev;
+  }
 }
 
 void PreflateHashChainExt::updateHash(const unsigned l) {

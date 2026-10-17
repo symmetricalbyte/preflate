@@ -13,7 +13,9 @@
    limitations under the License. */
 
 #include <string.h>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include "preflate_block_decoder.h"
 #include "preflate_decoder.h"
 #include "preflate_parameter_estimator.h"
@@ -151,14 +153,14 @@ bool preflate_decode(OutputStream& unpacked_output,
 
   std::queue<std::future<std::shared_ptr<PreflateDecoderTask>>> futureQueue;
   size_t queueLimit = std::min(2 * globalTaskPool.extraThreadCount(), (1 << 26) / MBThreshold);
-  bool fail = false;
+  auto fail = std::make_shared<std::atomic<bool>>(false);
 
   do {
     PreflateTokenBlock newBlock;
 
     bool ok = bdec.readBlock(newBlock, last);
     if (!ok) {
-      fail = true;
+      fail->store(true, std::memory_order_relaxed);
       break;
     }
 
@@ -166,7 +168,7 @@ bool preflate_decode(OutputStream& unpacked_output,
     lastEndPos = decOutCache.cacheEndPos();
     if (blockSize >= (1 << 31)) {
       // No mega blocks
-      fail = true;
+      fail->store(true, std::memory_order_relaxed);
       break;
     }
 
@@ -225,7 +227,7 @@ bool preflate_decode(OutputStream& unpacked_output,
                                  uncompressedOffset,
                                  last, paddingBits);
         if (!task.analyze() || !task.encode()) {
-          fail = true;
+          fail->store(true, std::memory_order_relaxed);
           break;
         }
       } else {
@@ -234,7 +236,7 @@ bool preflate_decode(OutputStream& unpacked_output,
           futureQueue.pop();
           std::shared_ptr<PreflateDecoderTask> data = first.get();
           if (!data || !data->encode()) {
-            fail = true;
+            fail->store(true, std::memory_order_relaxed);
             break;
           }
         }
@@ -244,8 +246,8 @@ bool preflate_decode(OutputStream& unpacked_output,
                                             std::move(uncompressedDataForMeta),
                                             uncompressedOffset,
                                             last, paddingBits));
-        futureQueue.push(globalTaskPool.addTask([ptask,&fail]() {
-          if (!fail && ptask->analyze()) {
+        futureQueue.push(globalTaskPool.addTask([ptask, fail]() {
+          if (!fail->load(std::memory_order_relaxed) && ptask->analyze()) {
             return ptask;
           } else {
             return std::shared_ptr<PreflateDecoderTask>();
@@ -257,13 +259,13 @@ bool preflate_decode(OutputStream& unpacked_output,
       }
       MBcount++;
     }
-  } while (!fail && !last);
+  } while (!fail->load(std::memory_order_relaxed) && !last);
   while (!futureQueue.empty()) {
     std::future<std::shared_ptr<PreflateDecoderTask>> first = std::move(futureQueue.front());
     futureQueue.pop();
     std::shared_ptr<PreflateDecoderTask> data = first.get();
-    if (fail || !data || !data->encode()) {
-      fail = true;
+    if (fail->load(std::memory_order_relaxed) || !data || !data->encode()) {
+      fail->store(true, std::memory_order_relaxed);
     }
   }
   decOutCache.flush();
@@ -271,7 +273,7 @@ bool preflate_decode(OutputStream& unpacked_output,
   if (deflate_size < min_deflate_size) {
     return false;
   }
-  return !fail && encoder.finish(preflate_diff);
+  return !fail->load(std::memory_order_relaxed) && encoder.finish(preflate_diff);
 }
 
 bool preflate_decode(std::vector<unsigned char>& unpacked_output,

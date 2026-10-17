@@ -13,21 +13,68 @@
    limitations under the License. */
 
 #include <algorithm>
+#include <memory>
 #include <string.h>
 #include "preflate_constants.h"
 #include "preflate_seq_chain.h"
+
+namespace {
+struct SeqChainBufferSet {
+  std::unique_ptr<SeqChainEntry[]> prev;
+  bool inUse;
+};
+
+struct SeqChainPool {
+  static const int POOL_SIZE = 4;
+  SeqChainBufferSet buffers[POOL_SIZE];
+
+  SeqChainPool() {
+    for (int i = 0; i < POOL_SIZE; ++i) {
+      buffers[i].prev.reset(new SeqChainEntry[1 << 16]);
+      buffers[i].inUse = false;
+    }
+  }
+
+  int acquire() {
+    for (int i = 0; i < POOL_SIZE; ++i) {
+      if (!buffers[i].inUse) {
+        buffers[i].inUse = true;
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  void release(int index) {
+    if (index >= 0 && index < POOL_SIZE) {
+      buffers[index].inUse = false;
+    }
+  }
+};
+
+static thread_local SeqChainPool tl_seqPool;
+}
 
 PreflateSeqChain::PreflateSeqChain(
     const std::vector<unsigned char>& input_)
   : _input(input_)
   , totalShift(-8)
   , curPos(0) {
-  prev = new SeqChainEntry[1 << 16];
+  poolIndex = tl_seqPool.acquire();
+  if (poolIndex >= 0) {
+    prev = tl_seqPool.buffers[poolIndex].prev.get();
+  } else {
+    prev = new SeqChainEntry[1 << 16];
+  }
   memset(heads, 0x00, sizeof(heads));
   _build(8, std::min<uint32_t>((1 << 16) - 8, _input.remaining()));
 }
 PreflateSeqChain::~PreflateSeqChain() {
-  delete[] prev;
+  if (poolIndex >= 0) {
+    tl_seqPool.release(poolIndex);
+  } else {
+    delete[] prev;
+  }
 }
 
 void PreflateSeqChain::_reshift() {

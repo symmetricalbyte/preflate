@@ -69,6 +69,7 @@ struct PreflateHashChainExt {
   unsigned short* head;
   unsigned * chainDepth;
   unsigned short* prev;
+  int poolIndex;
   unsigned char hashBits, hashShift;
   unsigned short runningHash, hashMask;
   unsigned totalShift;
